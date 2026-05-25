@@ -2,6 +2,10 @@ node_modules/
 dist/
 *.log
 
+# Secrets — keep .env local; commit .env.example instead
+.env
+server/.env
+
 # SQLite database + WAL files (auto-created on first run)
 database.sqlite
 database.sqlite-shm

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getAllDays, getDay, closeDay } from '../api.js';
+import { getAllDays, getDay, closeDay, clearToken } from '../api.js';
 import { todayStr, formatShortDate } from '../utils/dates.js';
 import { formatUAH, toAmount } from '../utils/format.js';
 import { randomQuote } from '../constants.js';
@@ -61,10 +61,18 @@ export default function WelcomePage() {
     navigate('/day');
   };
 
+  const handleLogout = () => {
+    clearToken();
+    navigate('/login', { replace: true });
+  };
+
   const lastBalance = lastClosed ? balanceOf(lastClosed) : null;
 
   return (
     <div className="page welcome">
+      <button className="btn btn-ghost btn-sm logout-btn" onClick={handleLogout}>
+        Вийти
+      </button>
       <div className="welcome-inner fade-in-up">
         <header className="welcome-header">
           <div className="logo-badge">₴</div>
