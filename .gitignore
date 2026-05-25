@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.log
+
+# SQLite database + WAL files (auto-created on first run)
+database.sqlite
+database.sqlite-shm
+database.sqlite-wal
+server/database.sqlite*
+
+.DS_Store
