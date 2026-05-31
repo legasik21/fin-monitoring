@@ -32,6 +32,17 @@ db.exec(`
   );
 `);
 
+// Additive migrations — each wrapped to be a no-op when the column already exists.
+function addColumnIfMissing(sql) {
+  try {
+    db.exec(sql);
+  } catch (e) {
+    if (!/duplicate column name/i.test(e.message)) throw e;
+  }
+}
+
+addColumnIfMissing('ALTER TABLE days ADD COLUMN expense_wants REAL DEFAULT 0');
+
 console.log(`[db] SQLite ready at ${dbPath}`);
 
 export default db;

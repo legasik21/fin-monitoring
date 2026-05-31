@@ -15,19 +15,26 @@ export default function DayPage() {
   const [searchParams] = useSearchParams();
   const fresh = searchParams.get('fresh') === '1';
 
-  // A :date in the path means we opened a past day from statistics → read-only.
-  const readOnly = Boolean(dateParam);
+  // A :date in the path means we opened a past day from statistics → read-only by default.
+  const viewingPastDay = Boolean(dateParam);
   const date = dateParam || todayStr();
 
   const [form, setForm] = useState(EMPTY_FORM);
+  const [originalForm, setOriginalForm] = useState(EMPTY_FORM);
   const [isClosed, setIsClosed] = useState(false);
+  const [editing, setEditing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState(false);
+  const [toastText, setToastText] = useState('Збережено ✓');
+
+  // Fields are locked in past-day view UNLESS the user explicitly enabled editing.
+  const inputsDisabled = viewingPastDay && !editing;
 
   useEffect(() => {
     let active = true;
     if (fresh && !dateParam) {
       setForm(EMPTY_FORM);
+      setOriginalForm(EMPTY_FORM);
       setIsClosed(false);
       setLoading(false);
       return;
@@ -38,10 +45,14 @@ export default function DayPage() {
         const next = { ...EMPTY_FORM };
         for (const key of AMOUNT_KEYS) next[key] = row[key] ? String(row[key]) : '';
         setForm(next);
+        setOriginalForm(next);
         setIsClosed(row.is_closed === 1);
       })
       .catch(() => {
-        if (active) setForm(EMPTY_FORM);
+        if (active) {
+          setForm(EMPTY_FORM);
+          setOriginalForm(EMPTY_FORM);
+        }
       })
       .finally(() => active && setLoading(false));
     return () => {
@@ -50,11 +61,38 @@ export default function DayPage() {
   }, [date, fresh, dateParam]);
 
   const handleChange = (key, raw) => {
-    if (readOnly) return;
+    if (inputsDisabled) return;
     if (raw === '') return setForm((f) => ({ ...f, [key]: '' }));
     let n = Number(raw);
     if (!Number.isFinite(n) || n < 0) return; // reject negatives / junk silently
     setForm((f) => ({ ...f, [key]: raw }));
+  };
+
+  const showToast = (text) => {
+    setToastText(text);
+    setToast(true);
+    window.clearTimeout(showToast._t);
+    showToast._t = window.setTimeout(() => setToast(false), 3000);
+  };
+
+  const handleEnterEdit = () => {
+    setEditing(true);
+  };
+
+  const handleCancelEdit = () => {
+    setForm(originalForm);
+    setEditing(false);
+  };
+
+  const handleSaveEdit = async () => {
+    // Editing a finalised day: persist values but keep is_closed = 1.
+    const updated = await saveDay(date, buildPayload(true));
+    const next = { ...EMPTY_FORM };
+    for (const key of AMOUNT_KEYS) next[key] = updated[key] ? String(updated[key]) : '';
+    setForm(next);
+    setOriginalForm(next);
+    setEditing(false);
+    showToast('Зміни збережено ✓');
   };
 
   const totals = useMemo(() => {
@@ -71,9 +109,7 @@ export default function DayPage() {
 
   const handleSave = async () => {
     await saveDay(date, buildPayload(false));
-    setToast(true);
-    window.clearTimeout(handleSave._t);
-    handleSave._t = window.setTimeout(() => setToast(false), 3000);
+    showToast('Збережено ✓');
   };
 
   const handleFinish = async () => {
@@ -100,11 +136,16 @@ export default function DayPage() {
         <header className="day-header">
           <h1>{formatLongDate(date)}</h1>
           <p className="day-subtitle">
-            {readOnly ? 'Облік фінансів за день' : 'Облік фінансів за сьогодні'}
+            {viewingPastDay ? 'Облік фінансів за день' : 'Облік фінансів за сьогодні'}
           </p>
         </header>
 
-        {readOnly && <div className="readonly-banner">🔒 Перегляд: день завершено</div>}
+        {viewingPastDay && !editing && (
+          <div className="readonly-banner">🔒 Перегляд: день завершено</div>
+        )}
+        {viewingPastDay && editing && (
+          <div className="edit-banner">✏️ Режим редагування</div>
+        )}
 
         {/* ---- Доходи ---- */}
         <section className="card">
@@ -121,7 +162,7 @@ export default function DayPage() {
                     inputMode="decimal"
                     placeholder={field.placeholder}
                     value={form[field.key]}
-                    disabled={readOnly}
+                    disabled={inputsDisabled}
                     onChange={(e) => handleChange(field.key, e.target.value)}
                   />
                   <span className="currency">₴</span>
@@ -149,7 +190,7 @@ export default function DayPage() {
                     inputMode="decimal"
                     placeholder={field.placeholder}
                     value={form[field.key]}
-                    disabled={readOnly}
+                    disabled={inputsDisabled}
                     onChange={(e) => handleChange(field.key, e.target.value)}
                   />
                   <span className="currency">₴</span>
@@ -179,12 +220,26 @@ export default function DayPage() {
         </section>
 
         {/* ---- Actions ---- */}
-        {readOnly ? (
-          <div className="day-actions">
-            <button className="btn btn-ghost" onClick={() => navigate('/stats')}>
-              ← Назад до статистики
-            </button>
-          </div>
+        {viewingPastDay ? (
+          editing ? (
+            <div className="day-actions">
+              <button className="btn btn-ghost" onClick={handleCancelEdit}>
+                Скасувати
+              </button>
+              <button className="btn btn-primary" onClick={handleSaveEdit}>
+                Зберегти зміни
+              </button>
+            </div>
+          ) : (
+            <div className="day-actions">
+              <button className="btn btn-ghost" onClick={() => navigate('/stats')}>
+                ← Назад до статистики
+              </button>
+              <button className="btn btn-warning" onClick={handleEnterEdit}>
+                ✏️ Редагувати
+              </button>
+            </div>
+          )
         ) : (
           <div className="day-actions">
             <button className="btn btn-ghost" onClick={handleBack}>
@@ -200,7 +255,7 @@ export default function DayPage() {
         )}
       </div>
 
-      <div className={`toast ${toast ? 'toast-show' : ''}`}>Збережено ✓</div>
+      <div className={`toast ${toast ? 'toast-show' : ''}`}>{toastText}</div>
     </div>
   );
 }

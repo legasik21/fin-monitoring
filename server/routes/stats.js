@@ -8,6 +8,7 @@ const EXPENSE_CATEGORIES = [
   { key: 'expense_food_market', label: 'Продукти', color: '#FFA64D' },
   { key: 'expense_no_reason', label: '«Ні за що»', color: '#B84DFF' },
   { key: 'expense_gas', label: 'Пальне', color: '#4D9EFF' },
+  { key: 'expense_wants', label: 'Фізичні хотілки', color: '#00C896' },
 ];
 
 const MONTHS_SHORT = [
@@ -52,7 +53,7 @@ const dm = (date) =>
 const round2 = (n) => Math.round(n * 100) / 100;
 const incomeOf = (r) => r.income_main + r.income_tips;
 const expensesOf = (r) =>
-  r.expense_food_out + r.expense_food_market + r.expense_no_reason + r.expense_gas;
+  r.expense_food_out + r.expense_food_market + r.expense_no_reason + r.expense_gas + r.expense_wants;
 const balanceOf = (r) => incomeOf(r) - expensesOf(r);
 
 /**

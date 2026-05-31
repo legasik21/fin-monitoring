@@ -10,6 +10,7 @@ const NUMERIC_FIELDS = [
   'expense_food_market',
   'expense_no_reason',
   'expense_gas',
+  'expense_wants',
 ];
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -45,11 +46,11 @@ const selectAll = db.prepare('SELECT * FROM days ORDER BY date DESC');
 const upsertStmt = db.prepare(`
   INSERT INTO days (
     date, income_main, income_tips,
-    expense_food_out, expense_food_market, expense_no_reason, expense_gas,
+    expense_food_out, expense_food_market, expense_no_reason, expense_gas, expense_wants,
     is_closed, updated_at
   ) VALUES (
     @date, @income_main, @income_tips,
-    @expense_food_out, @expense_food_market, @expense_no_reason, @expense_gas,
+    @expense_food_out, @expense_food_market, @expense_no_reason, @expense_gas, @expense_wants,
     @is_closed, datetime('now')
   )
   ON CONFLICT(date) DO UPDATE SET
@@ -59,6 +60,7 @@ const upsertStmt = db.prepare(`
     expense_food_market = excluded.expense_food_market,
     expense_no_reason   = excluded.expense_no_reason,
     expense_gas         = excluded.expense_gas,
+    expense_wants       = excluded.expense_wants,
     is_closed           = excluded.is_closed,
     updated_at          = datetime('now')
 `);

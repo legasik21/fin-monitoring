@@ -28,6 +28,12 @@ export const EXPENSE_FIELDS = [
     icon: '⛽',
     placeholder: 'заправка, пальне',
   },
+  {
+    key: 'expense_wants',
+    label: 'Фізичні хотілки',
+    icon: '🛍️',
+    placeholder: 'гаджети, одяг, парфуми...',
+  },
 ];
 
 // All amount columns, used by the statistics table header/rows.

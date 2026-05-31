@@ -30,6 +30,7 @@ const TABLE_COLS = [
   { key: 'expense_food_market', label: 'Продукти' },
   { key: 'expense_no_reason', label: '«Ні за що»' },
   { key: 'expense_gas', label: 'Пальне' },
+  { key: 'expense_wants', label: 'Фіз. хотілки' },
 ];
 
 function rowBalance(r) {
@@ -38,7 +39,8 @@ function rowBalance(r) {
     toAmount(r.expense_food_out) +
     toAmount(r.expense_food_market) +
     toAmount(r.expense_no_reason) +
-    toAmount(r.expense_gas);
+    toAmount(r.expense_gas) +
+    toAmount(r.expense_wants);
   return income - expenses;
 }
 
