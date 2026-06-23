@@ -1,0 +1,12 @@
+node_modules
+client/node_modules
+server/node_modules
+client/dist
+.git
+*.log
+.env
+server/.env
+database.sqlite
+database.sqlite-shm
+database.sqlite-wal
+server/database.sqlite*

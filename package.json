@@ -1,0 +1,22 @@
+{
+  "name": "fin_monitoring",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Персональний моніторинг фінансів — облік доходів і витрат",
+  "type": "module",
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,client -c green,cyan \"npm run dev -w server\" \"npm run dev -w client\"",
+    "dev:server": "npm run dev -w server",
+    "dev:client": "npm run dev -w client",
+    "build": "npm run build -w client",
+    "start": "npm run start -w server",
+    "preview": "npm run preview -w client"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

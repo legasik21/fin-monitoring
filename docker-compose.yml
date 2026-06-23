@@ -1,0 +1,81 @@
+name: fin-monitoring
+
+# fin-monitoring — production deploy (Docker + Traefik).
+# app (Express serving the built Vite client) + db (PostgreSQL 16, Drizzle ORM).
+# Postgres is reachable ONLY on the private `internal` network — never published to
+# the host or the internet. Runtime config comes from ./.env (gitignored).
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: fin-monitoring-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-fin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-fin_monitoring}
+    volumes:
+      - fin-monitoring-db-data:/var/lib/postgresql/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fin} -d ${POSTGRES_DB:-fin_monitoring}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  app:
+    build:
+      context: .
+      args:
+        # Served at its own subdomain root (https://fin-mon.cyberskill.online/), so base is '/'.
+        VITE_BASE: /
+    image: local/fin-monitoring:latest
+    container_name: fin-monitoring
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      # Local-day computation (today's record / quick-add) uses the server clock —
+      # pin it to Kyiv so midnight entries land on the correct calendar day.
+      TZ: Europe/Kyiv
+      PORT: "3001"
+      DATABASE_URL: ${DATABASE_URL}
+      APP_PASSWORD: ${APP_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      QUICK_ADD_TOKEN: ${QUICK_ADD_TOKEN}
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3001/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    # Subdomain-root routing, mirroring the other cyberskill.online subdomain stacks
+    # (same traefik-public network, letsencrypt resolver, websecure entrypoint,
+    # default-security-headers@file middleware). No stripprefix: SPA served at root.
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=traefik-public
+      - traefik.http.routers.fin-app.rule=Host(`fin-mon.cyberskill.online`)
+      - traefik.http.routers.fin-app.entrypoints=websecure
+      - traefik.http.routers.fin-app.tls=true
+      - traefik.http.routers.fin-app.tls.certresolver=letsencrypt
+      - traefik.http.routers.fin-app.middlewares=default-security-headers@file
+      - traefik.http.services.fin-app.loadbalancer.server.port=3001
+    networks:
+      - default
+      - traefik-public
+      - internal
+
+volumes:
+  fin-monitoring-db-data:
+    name: fin-monitoring-db-data
+
+networks:
+  internal:
+    name: fin-monitoring-internal
+  traefik-public:
+    external: true
