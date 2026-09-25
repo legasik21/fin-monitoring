@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getAllDays, clearToken, getStreak, getGoals, getMe } from '../api.js';
+import { getAllDays, clearToken, getStreak, getGoals, getMe, apiError } from '../api.js';
 import { todayStr, formatShortDate } from '../utils/dates.js';
 import { formatUAH, formatBalance } from '../utils/format.js';
 import { randomQuote } from '../constants.js';
@@ -14,32 +14,53 @@ export default function WelcomePage() {
   const [streak, setStreak] = useState(null); // { current, longest }
   const [nearestGoal, setNearestGoal] = useState(null);
   const [loading, setLoading] = useState(true);
+  // One banner for the first failed request ('' = all loaded). A widget whose
+  // request failed keeps its previous value rather than pretending to be empty.
+  const [loadError, setLoadError] = useState('');
+  const [daysLoaded, setDaysLoaded] = useState(false);
   const mountedRef = useRef(true);
+  // Only the newest load may write state (a repeated retry must not let an older,
+  // slower batch overwrite a newer one).
+  const requestRef = useRef(0);
 
   const refresh = async () => {
+    const request = ++requestRef.current;
     const date = todayStr();
-    const [allDays, streakData, goals, user] = await Promise.all([
-      getAllDays().catch(() => []),
-      getStreak().catch(() => null),
-      getGoals().catch(() => []),
-      getMe().catch(() => null),
-    ]);
-    if (!mountedRef.current) return; // component unmounted mid-fetch
-    setMe(user);
-    // A day row for today exists once anything was recorded (or it was closed);
-    // that decides the label of the single "go to today" button.
-    setToday(allDays.find((d) => d.date === date) || null);
-    const closed = allDays
-      .filter((d) => d.is_closed === 1)
-      .sort((a, b) => b.date.localeCompare(a.date));
-    setLastClosed(closed[0] || null);
-    setStreak(streakData);
-    // Nearest active goal = the unfinished goal closest to completion.
-    const active = goals
-      .filter((g) => !g.achieved)
-      .sort((a, b) => b.percent - a.percent);
-    setNearestGoal(active[0] || null);
+    // allSettled instead of catching each call to []/null: a network error or 5xx
+    // must not render as a brand-new account (no days, no streak, no goals).
+    const results = await Promise.allSettled([getAllDays(), getStreak(), getGoals(), getMe()]);
+    // Unmounted mid-fetch, or superseded by a newer load.
+    if (!mountedRef.current || request !== requestRef.current) return;
+    const [daysRes, streakRes, goalsRes, meRes] = results;
+    const failed = results.find((r) => r.status === 'rejected');
+    setLoadError(failed ? apiError(failed.reason, 'Не вдалося завантажити дані') : '');
+    if (meRes.status === 'fulfilled') setMe(meRes.value);
+    if (daysRes.status === 'fulfilled') {
+      const allDays = daysRes.value;
+      // A day row for today exists once anything was recorded (or it was closed);
+      // that decides the label of the single "go to today" button.
+      setToday(allDays.find((d) => d.date === date) || null);
+      const closed = allDays
+        .filter((d) => d.is_closed === 1)
+        .sort((a, b) => b.date.localeCompare(a.date));
+      setLastClosed(closed[0] || null);
+      setDaysLoaded(true);
+    }
+    if (streakRes.status === 'fulfilled') setStreak(streakRes.value);
+    if (goalsRes.status === 'fulfilled') {
+      // Nearest active goal = the unfinished goal closest to completion.
+      const active = goalsRes.value
+        .filter((g) => !g.achieved)
+        .sort((a, b) => b.percent - a.percent);
+      setNearestGoal(active[0] || null);
+    }
     setLoading(false);
+  };
+
+  const retryLoad = () => {
+    setLoadError('');
+    setLoading(true);
+    refresh();
   };
 
   useEffect(() => {
@@ -80,6 +101,15 @@ export default function WelcomePage() {
           <h1>Фінансовий моніторинг</h1>
           <p className="quote">«{quote}»</p>
         </header>
+
+        {loadError && (
+          <div className="alert-error" role="alert">
+            {loadError}{' '}
+            <button className="btn btn-ghost btn-sm" onClick={retryLoad}>
+              Спробувати ще раз
+            </button>
+          </div>
+        )}
 
         {streak && (
           <section className="streak-banner">
@@ -157,6 +187,9 @@ export default function WelcomePage() {
                 {formatBalance(lastBalance)}
               </span>
             </div>
+          ) : !daysLoaded ? (
+            // The days request failed (see the banner): unknown, not "none yet".
+            <div className="last-day-empty">—</div>
           ) : (
             <div className="last-day-empty">Ще немає завершених днів</div>
           )}

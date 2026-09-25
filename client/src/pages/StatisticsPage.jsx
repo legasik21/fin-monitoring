@@ -13,7 +13,7 @@ import {
   Pie,
   Cell,
 } from 'recharts';
-import { getStats } from '../api.js';
+import { getStats, apiError } from '../api.js';
 import { formatShortDate } from '../utils/dates.js';
 import { formatUAH, formatNumber, formatBalance } from '../utils/format.js';
 import { categoryLabel } from '../utils/categories.js';
@@ -54,19 +54,23 @@ export default function StatisticsPage() {
   const [range, setRange] = useState('day');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  // A failed request is not "no data for this period" — keep the two apart.
+  const [loadError, setLoadError] = useState('');
+  const [reloadKey, setReloadKey] = useState(0); // bumped by «Спробувати ще раз»
 
   useEffect(() => {
     if (view !== 'overview') return undefined;
     let active = true;
     setLoading(true);
+    setLoadError('');
     getStats(range)
       .then((d) => active && setData(d))
-      .catch(() => active && setData(null))
+      .catch((err) => active && setLoadError(apiError(err, 'Не вдалося завантажити статистику')))
       .finally(() => active && setLoading(false));
     return () => {
       active = false;
     };
-  }, [range, view]);
+  }, [range, view, reloadKey]);
 
   // Colours and category order come from the server; archived categories stay in
   // the breakdown (they still have entries in the window), just labelled.
@@ -116,6 +120,13 @@ export default function StatisticsPage() {
 
             {loading ? (
               <div className="stats-placeholder">Завантаження…</div>
+            ) : loadError ? (
+              <div className="alert-error" role="alert">
+                {loadError}{' '}
+                <button className="btn btn-ghost btn-sm" onClick={() => setReloadKey((k) => k + 1)}>
+                  Спробувати ще раз
+                </button>
+              </div>
             ) : !data || !data.hasData ? (
               <div className="stats-placeholder">Немає даних за цей період 📊</div>
             ) : (

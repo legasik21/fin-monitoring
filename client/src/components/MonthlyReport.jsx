@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { getMonthly } from '../api.js';
+import { getMonthly, apiError } from '../api.js';
 import { formatUAH, formatBalance } from '../utils/format.js';
 import { formatShortDate } from '../utils/dates.js';
 import { categoryLabel } from '../utils/categories.js';
@@ -39,18 +39,22 @@ export default function MonthlyReport() {
   const [month, setMonth] = useState(currentMonthStr());
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  // A failed request is not "no entries this month" — keep the two apart.
+  const [loadError, setLoadError] = useState('');
+  const [reloadKey, setReloadKey] = useState(0); // bumped by «Спробувати ще раз»
 
   useEffect(() => {
     let active = true;
     setLoading(true);
+    setLoadError('');
     getMonthly(month)
       .then((d) => active && setData(d))
-      .catch(() => active && setData(null))
+      .catch((err) => active && setLoadError(apiError(err, 'Не вдалося завантажити звіт за місяць')))
       .finally(() => active && setLoading(false));
     return () => {
       active = false;
     };
-  }, [month]);
+  }, [month, reloadKey]);
 
   return (
     <section className="card monthly-card">
@@ -68,6 +72,13 @@ export default function MonthlyReport() {
 
       {loading ? (
         <div className="stats-placeholder small">Завантаження…</div>
+      ) : loadError ? (
+        <div className="alert-error" role="alert">
+          {loadError}{' '}
+          <button className="btn btn-ghost btn-sm" onClick={() => setReloadKey((k) => k + 1)}>
+            Спробувати ще раз
+          </button>
+        </div>
       ) : !data || !data.hasData ? (
         <div className="stats-placeholder small">Немає записів за {monthTitle(month)} 🗓️</div>
       ) : (

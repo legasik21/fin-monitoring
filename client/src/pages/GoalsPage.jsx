@@ -99,13 +99,36 @@ export default function GoalsPage() {
   const [target, setTarget] = useState('');
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
+  // A failed load is its own state: rendering it as an empty list would tell the
+  // user their goals are gone.
+  const [loadError, setLoadError] = useState('');
   const mountedRef = useRef(true);
+  // Only the newest load may write state: a late response from an older one (a
+  // retry racing a post-mutation refresh) must not overwrite fresher data.
+  const requestRef = useRef(0);
 
   const refresh = async () => {
-    const list = await getGoals().catch(() => []);
-    if (!mountedRef.current) return; // component unmounted mid-fetch
-    setGoals(list);
+    const request = ++requestRef.current;
+    let list = null;
+    let failure = '';
+    try {
+      list = await getGoals();
+    } catch (err) {
+      failure = apiError(err, 'Не вдалося завантажити цілі');
+    }
+    // Unmounted mid-fetch, or superseded by a newer load.
+    if (!mountedRef.current || request !== requestRef.current) return;
+    // On failure keep the goals already on screen (e.g. after a successful
+    // contribution whose follow-up reload failed) — the banner says it is stale.
+    if (list) setGoals(list);
+    setLoadError(failure);
     setLoading(false);
+  };
+
+  const retryLoad = () => {
+    setLoadError('');
+    setLoading(true);
+    refresh();
   };
 
   useEffect(() => {
@@ -196,14 +219,27 @@ export default function GoalsPage() {
 
         {loading ? (
           <div className="stats-placeholder">Завантаження…</div>
-        ) : goals.length === 0 ? (
-          <div className="stats-placeholder">Ще немає цілей. Створіть першу! 🎯</div>
         ) : (
-          <div className="goals-list">
-            {goals.map((g) => (
-              <GoalCard key={g.id} goal={g} onContribute={handleContribute} onDelete={handleDelete} />
-            ))}
-          </div>
+          <>
+            {loadError && (
+              <div className="alert-error" role="alert">
+                {loadError}{' '}
+                <button className="btn btn-ghost btn-sm" onClick={retryLoad}>
+                  Спробувати ще раз
+                </button>
+              </div>
+            )}
+            {goals.length > 0 ? (
+              <div className="goals-list">
+                {goals.map((g) => (
+                  <GoalCard key={g.id} goal={g} onContribute={handleContribute} onDelete={handleDelete} />
+                ))}
+              </div>
+            ) : (
+              // Never claim "no goals" when the load itself failed.
+              !loadError && <div className="stats-placeholder">Ще немає цілей. Створіть першу! 🎯</div>
+            )}
+          </>
         )}
       </div>
     </div>
