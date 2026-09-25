@@ -1,29 +1,31 @@
 import { Router } from 'express';
-import { asc } from 'drizzle-orm';
+import { and, asc, between, eq, sql } from 'drizzle-orm';
 import db from '../db.js';
-import { days } from '../schema.js';
-import { serializeDay } from '../serialize.js';
+import { categories, days, transactions } from '../schema.js';
+import { isValidDateStr, isValidMonthStr, todayStr } from '../lib/dates.js';
+import { round2, toMoney } from '../lib/money.js';
+import {
+  categoryJoin,
+  expenseSum,
+  incomeSum,
+  queryDaySummaries,
+  rangeTotals,
+  readSnapshot,
+  route,
+} from '../lib/ledger.js';
 
+// Per-user statistics. Every money figure is summed by Postgres (exact numeric);
+// JS only lays the SQL rows onto the continuous bucket list, labels them and
+// derives averages / percentages with round2. Categories are the user's own:
+// all active ones plus archived ones that still have data in the window.
 const router = Router();
 
-const EXPENSE_CATEGORIES = [
-  { key: 'expense_food_out', label: 'Їжа', color: '#FF4D4D' },
-  { key: 'expense_food_market', label: 'Продукти', color: '#FFA64D' },
-  { key: 'expense_no_reason', label: '«Ні за що»', color: '#B84DFF' },
-  { key: 'expense_gas', label: 'Пальне', color: '#4D9EFF' },
-  { key: 'expense_wants', label: 'Фізичні хотілки', color: '#00C896' },
-  { key: 'expense_health', label: "Здоров'я", color: '#FF7AA2' },
-];
+const RANGES = ['day', 'week', 'month'];
 
 const MONTHS_SHORT = [
   'січ', 'лют', 'бер', 'кві', 'тра', 'чер',
   'лип', 'сер', 'вер', 'жов', 'лис', 'гру',
 ];
-
-// Load every day (oldest first) and normalise to the legacy row shape so the
-// JS aggregation below is identical to the original SQLite implementation.
-const loadAllDays = async () =>
-  (await db.select().from(days).orderBy(asc(days.date))).map(serializeDay);
 
 // ---- date helpers (all local-time, operating on YYYY-MM-DD) ----
 function parseDate(str) {
@@ -57,21 +59,10 @@ function mondayOf(date) {
 const dm = (date) =>
   `${String(date.getDate()).padStart(2, '0')}.${String(date.getMonth() + 1).padStart(2, '0')}`;
 
-const round2 = (n) => Math.round(n * 100) / 100;
-const incomeOf = (r) => r.income_main + r.income_tips;
-const expensesOf = (r) =>
-  r.expense_food_out +
-  r.expense_food_market +
-  r.expense_no_reason +
-  r.expense_gas +
-  r.expense_wants +
-  r.expense_health;
-const balanceOf = (r) => incomeOf(r) - expensesOf(r);
+/** Local "today" (lib/dates.js, server clock) as a local-midnight Date. */
+const todayDate = () => parseDate(todayStr());
 
-/**
- * Build the ordered, continuous list of chart buckets for the window plus a
- * function that maps any date string to the key of the bucket it belongs to.
- */
+/** Ordered, continuous chart buckets for the window, keyed like BUCKET_KEY below. */
 function buildBuckets(range, today) {
   const buckets = [];
   if (range === 'week') {
@@ -80,7 +71,7 @@ function buildBuckets(range, today) {
       const start = addDays(thisMonday, -7 * i);
       buckets.push({ key: fmtDate(start), label: dm(start) });
     }
-    return { buckets, keyOf: (str) => fmtDate(mondayOf(parseDate(str))) };
+    return buckets;
   }
   if (range === 'month') {
     const first = startOfMonth(today);
@@ -91,15 +82,24 @@ function buildBuckets(range, today) {
         label: `${MONTHS_SHORT[m.getMonth()]} ${m.getFullYear()}`,
       });
     }
-    return { buckets, keyOf: (str) => str.slice(0, 7) };
+    return buckets;
   }
   // default: day — last 7 days
   for (let i = 6; i >= 0; i--) {
     const d = addDays(today, -i);
     buckets.push({ key: fmtDate(d), label: dm(d) });
   }
-  return { buckets, keyOf: (str) => str };
+  return buckets;
 }
+
+// The SQL side of the same bucket keys, so each bucket is summed by Postgres.
+// ::timestamp (without time zone) keeps date_trunc independent of the DB
+// session's time zone; ISO weeks start on Monday, like mondayOf().
+const BUCKET_KEY = {
+  day: () => sql`${transactions.date}`,
+  week: () => sql`date_trunc('week', ${transactions.date}::timestamp)::date`,
+  month: () => sql`to_char(${transactions.date}, 'YYYY-MM')`,
+};
 
 function windowStart(range, today) {
   if (range === 'week') return addDays(mondayOf(today), -7 * 7);
@@ -107,185 +107,295 @@ function windowStart(range, today) {
   return addDays(today, -6);
 }
 
+/** Highest / lowest balance among day summaries (oldest first: ties keep the earliest). */
+function bestAndWorst(rowsOldestFirst) {
+  let best = null;
+  let worst = null;
+  for (const r of rowsOldestFirst) {
+    const balance = toMoney(r.balance);
+    if (best === null || balance > best.balance) best = { date: r.date, balance };
+    if (worst === null || balance < worst.balance) worst = { date: r.date, balance };
+  }
+  return { best, worst };
+}
+
+// Active first, then the user's order — used for pie slices, table columns and ties.
+const categoryOrder = () => [
+  sql`${categories.archived_at} is not null`,
+  asc(categories.sort_order),
+  asc(categories.id),
+];
+
 // GET /api/stats?range=day|week|month
-router.get('/', async (req, res) => {
-  const range = ['day', 'week', 'month'].includes(req.query.range)
-    ? req.query.range
-    : 'day';
+router.get(
+  '/',
+  route(async (req, res) => {
+    const userId = req.userId;
+    const range = RANGES.includes(req.query.range) ? req.query.range : 'day';
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const fromStr = fmtDate(windowStart(range, today));
-  const toStr = fmtDate(today);
+    const today = todayDate();
+    const fromStr = fmtDate(windowStart(range, today));
+    const toStr = fmtDate(today);
 
-  const rows = (await loadAllDays()).filter(
-    (r) => r.date >= fromStr && r.date <= toStr
-  );
+    // One snapshot so the chart, pie, totals and table all describe the same data.
+    const data = await readSnapshot(async (tx) => {
+      const inWindow = () => between(transactions.date, fromStr, toStr);
+      const bucketKey = BUCKET_KEY[range]();
 
-  const { buckets, keyOf } = buildBuckets(range, today);
-  const bucketIndex = new Map(buckets.map((b, i) => [b.key, i]));
-  const chart = buckets.map((b) => ({ label: b.label, income: 0, expenses: 0 }));
+      const chartRows = await tx
+        .select({ bucket: bucketKey, income: incomeSum(), expenses: expenseSum() })
+        .from(transactions)
+        .innerJoin(categories, categoryJoin())
+        .where(and(eq(transactions.user_id, userId), inWindow()))
+        .groupBy(bucketKey);
 
-  const categoryTotals = Object.fromEntries(EXPENSE_CATEGORIES.map((c) => [c.key, 0]));
-  let totalIncome = 0;
-  let totalExpenses = 0;
-  let best = null;
-  let worst = null;
+      // Both kinds: every active category + archived ones with entries in the window.
+      const categoryRows = await tx
+        .select({
+          id: categories.id,
+          kind: categories.kind,
+          name: categories.name,
+          color: categories.color,
+          archived: sql`${categories.archived_at} is not null`,
+          total: sql`coalesce(sum(${transactions.amount}), 0)`,
+        })
+        .from(categories)
+        .leftJoin(
+          transactions,
+          and(
+            eq(transactions.category_id, categories.id),
+            eq(transactions.user_id, categories.user_id),
+            inWindow()
+          )
+        )
+        .where(eq(categories.user_id, userId))
+        .groupBy(categories.id)
+        .having(sql`${categories.archived_at} is null or count(${transactions.id}) > 0`)
+        .orderBy(sql`${categories.kind} = 'expense'`, ...categoryOrder());
 
-  for (const r of rows) {
-    const idx = bucketIndex.get(keyOf(r.date));
-    if (idx !== undefined) {
-      chart[idx].income += incomeOf(r);
-      chart[idx].expenses += expensesOf(r);
+      // Per day × category, for the table's amount cells.
+      const amountRows = await tx
+        .select({
+          date: transactions.date,
+          category_id: transactions.category_id,
+          amount: sql`sum(${transactions.amount})`,
+        })
+        .from(transactions)
+        .where(and(eq(transactions.user_id, userId), inWindow()))
+        .groupBy(transactions.date, transactions.category_id);
+
+      const dayRows = await queryDaySummaries(tx, userId, { from: fromStr, to: toStr });
+      const totals = await rangeTotals(tx, userId, fromStr, toStr);
+      return { chartRows, categoryRows, amountRows, dayRows, totals };
+    });
+
+    const byBucket = new Map(data.chartRows.map((r) => [String(r.bucket), r]));
+    const chart = buildBuckets(range, today).map((b) => {
+      const row = byBucket.get(b.key);
+      return { label: b.label, income: toMoney(row?.income), expenses: toMoney(row?.expenses) };
+    });
+
+    const totalIncome = toMoney(data.totals.income);
+    const totalExpenses = toMoney(data.totals.expenses);
+
+    const categoriesOut = data.categoryRows
+      .filter((c) => c.kind === 'expense')
+      .map((c) => {
+        const value = toMoney(c.total);
+        return {
+          key: String(c.id),
+          id: c.id,
+          label: c.name,
+          color: c.color,
+          archived: Boolean(c.archived),
+          value,
+          percent: totalExpenses > 0 ? round2((value / totalExpenses) * 100) : 0,
+        };
+      });
+
+    const columns = data.categoryRows.map((c) => ({
+      key: String(c.id),
+      id: c.id,
+      kind: c.kind,
+      label: c.name,
+      color: c.color,
+      archived: Boolean(c.archived),
+    }));
+
+    const amountsByDate = new Map();
+    for (const r of data.amountRows) {
+      if (!amountsByDate.has(r.date)) amountsByDate.set(r.date, {});
+      amountsByDate.get(r.date)[String(r.category_id)] = toMoney(r.amount);
     }
-    totalIncome += incomeOf(r);
-    totalExpenses += expensesOf(r);
-    for (const c of EXPENSE_CATEGORIES) categoryTotals[c.key] += r[c.key];
 
-    const bal = balanceOf(r);
-    if (best === null || bal > best.balance) best = { date: r.date, balance: round2(bal) };
-    if (worst === null || bal < worst.balance) worst = { date: r.date, balance: round2(bal) };
-  }
+    // dayRows are newest first (the table order); best/worst scan oldest first.
+    const { best, worst } = bestAndWorst([...data.dayRows].reverse());
+    const recordedDays = data.dayRows.length;
 
-  chart.forEach((c) => {
-    c.income = round2(c.income);
-    c.expenses = round2(c.expenses);
-  });
+    res.json({
+      range,
+      from: fromStr,
+      to: toStr,
+      hasData: recordedDays > 0,
+      chart,
+      categories: categoriesOut,
+      totalExpenses,
+      summary: {
+        avgIncome: recordedDays ? round2(totalIncome / recordedDays) : 0,
+        avgExpenses: recordedDays ? round2(totalExpenses / recordedDays) : 0,
+        bestDay: best,
+        worstDay: worst,
+      },
+      columns,
+      days: data.dayRows.map((d) => ({
+        date: d.date,
+        is_closed: d.is_closed ? 1 : 0,
+        income: toMoney(d.income),
+        expenses: toMoney(d.expenses),
+        balance: toMoney(d.balance),
+        amounts: amountsByDate.get(d.date) ?? {},
+      })),
+    });
+  })
+);
 
-  const categories = EXPENSE_CATEGORIES.map((c) => ({
-    key: c.key,
-    label: c.label,
-    color: c.color,
-    value: round2(categoryTotals[c.key]),
-    percent: totalExpenses > 0 ? round2((categoryTotals[c.key] / totalExpenses) * 100) : 0,
-  }));
+// GET /api/stats/streak — consecutive recorded days
+router.get(
+  '/streak',
+  route(async (req, res) => {
+    const rows = await db
+      .select({ date: days.date })
+      .from(days)
+      .where(eq(days.user_id, req.userId))
+      .orderBy(asc(days.date)); // oldest first, unique per user
+    const dateSet = new Set(rows.map((r) => r.date));
 
-  const recordedDays = rows.length;
-  const summary = {
-    avgIncome: recordedDays ? round2(totalIncome / recordedDays) : 0,
-    avgExpenses: recordedDays ? round2(totalExpenses / recordedDays) : 0,
-    bestDay: best,
-    worstDay: worst,
-  };
+    // Longest run of consecutive calendar days ever recorded.
+    let longest = 0;
+    let run = 0;
+    let prev = null;
+    for (const r of rows) {
+      if (prev && fmtDate(addDays(parseDate(prev), 1)) === r.date) run += 1;
+      else run = 1;
+      if (run > longest) longest = run;
+      prev = r.date;
+    }
 
-  res.json({
-    range,
-    from: fromStr,
-    to: toStr,
-    hasData: recordedDays > 0,
-    chart,
-    categories,
-    totalExpenses: round2(totalExpenses),
-    summary,
-    days: [...rows].reverse(), // newest first for the table
-  });
-});
+    // Current streak: walk back from today (or yesterday if today isn't logged).
+    const today = todayDate();
+    let cursor = null;
+    if (dateSet.has(fmtDate(today))) cursor = today;
+    else if (dateSet.has(fmtDate(addDays(today, -1)))) cursor = addDays(today, -1);
 
-// GET /api/stats/streak — consecutive-days logging streak (Feature 2)
-router.get('/streak', async (_req, res) => {
-  const rows = await loadAllDays(); // oldest first, unique dates
-  const dateSet = new Set(rows.map((r) => r.date));
+    let current = 0;
+    while (cursor && dateSet.has(fmtDate(cursor))) {
+      current += 1;
+      cursor = addDays(cursor, -1);
+    }
 
-  // Longest run of consecutive calendar days ever recorded.
-  let longest = 0;
-  let run = 0;
-  let prev = null;
-  for (const r of rows) {
-    if (prev && fmtDate(addDays(parseDate(prev), 1)) === r.date) run += 1;
-    else run = 1;
-    if (run > longest) longest = run;
-    prev = r.date;
-  }
+    res.json({ current, longest });
+  })
+);
 
-  // Current streak: walk back from today (or yesterday if today isn't logged).
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  let cursor = null;
-  if (dateSet.has(fmtDate(today))) cursor = today;
-  else if (dateSet.has(fmtDate(addDays(today, -1)))) cursor = addDays(today, -1);
+// GET /api/stats/calendar?year=YYYY — per-day balance for the heatmap
+router.get(
+  '/calendar',
+  route(async (req, res) => {
+    const { year } = req.query;
+    // Invalid / absent year → all years (as before); the range keeps it a real date.
+    const valid = typeof year === 'string' && /^\d{4}$/.test(year) && isValidDateStr(`${year}-01-01`);
+    const rows = await queryDaySummaries(db, req.userId, {
+      ...(valid ? { from: `${year}-01-01`, to: `${year}-12-31` } : {}),
+      order: 'asc',
+    });
+    res.json(rows.map((r) => ({ date: r.date, balance: toMoney(r.balance) })));
+  })
+);
 
-  let current = 0;
-  while (cursor && dateSet.has(fmtDate(cursor))) {
-    current += 1;
-    cursor = addDays(cursor, -1);
-  }
+// GET /api/stats/monthly?month=YYYY-MM — monthly "wrapped" recap
+router.get(
+  '/monthly',
+  route(async (req, res) => {
+    const userId = req.userId;
+    const month = isValidMonthStr(req.query.month) ? req.query.month : todayStr().slice(0, 7);
 
-  res.json({ current, longest });
-});
+    const [y, mo] = month.split('-').map(Number);
+    const prevD = new Date(y, mo - 2, 1);
+    const prevMonth = `${prevD.getFullYear()}-${String(prevD.getMonth() + 1).padStart(2, '0')}`;
+    // Inclusive date bounds; day 0 of the next month = the month's last day.
+    const monthEnd = fmtDate(new Date(y, mo, 0));
+    const prevEnd = fmtDate(new Date(y, mo - 1, 0));
+    const from = `${month}-01`;
 
-// GET /api/stats/calendar?year=YYYY — per-day balance for the heatmap (Feature 4)
-router.get('/calendar', async (req, res) => {
-  const rows = await loadAllDays();
-  const year = /^\d{4}$/.test(req.query.year) ? req.query.year : null;
-  const data = rows
-    .filter((r) => !year || r.date.slice(0, 4) === year)
-    .map((r) => ({ date: r.date, balance: round2(balanceOf(r)) }));
-  res.json(data);
-});
+    const data = await readSnapshot(async (tx) => {
+      const cur = await rangeTotals(tx, userId, from, monthEnd);
+      const prev = await rangeTotals(tx, userId, `${prevMonth}-01`, prevEnd);
 
-// GET /api/stats/monthly?month=YYYY-MM — monthly "wrapped" recap (Feature 5)
-router.get('/monthly', async (req, res) => {
-  const month = /^\d{4}-\d{2}$/.test(req.query.month)
-    ? req.query.month
-    : fmtDate(new Date()).slice(0, 7);
+      // Top spending category this month (ties: active first, then the user's order).
+      const [top] = await tx
+        .select({
+          id: categories.id,
+          name: categories.name,
+          color: categories.color,
+          archived: sql`${categories.archived_at} is not null`,
+          amount: sql`sum(${transactions.amount})`,
+        })
+        .from(transactions)
+        .innerJoin(categories, categoryJoin())
+        .where(
+          and(
+            eq(transactions.user_id, userId),
+            eq(categories.kind, 'expense'),
+            between(transactions.date, from, monthEnd)
+          )
+        )
+        .groupBy(categories.id)
+        .orderBy(sql`sum(${transactions.amount}) desc`, ...categoryOrder())
+        .limit(1);
 
-  const rows = await loadAllDays();
-  const inMonth = (m) => rows.filter((r) => r.date.slice(0, 7) === m);
-  const cur = inMonth(month);
+      const dayRows = await queryDaySummaries(tx, userId, { from, to: monthEnd, order: 'asc' });
+      return { cur, prev, top, dayRows };
+    });
 
-  // Previous calendar month key.
-  const [y, mo] = month.split('-').map(Number);
-  const prevD = new Date(y, mo - 2, 1);
-  const prevMonth = `${prevD.getFullYear()}-${String(prevD.getMonth() + 1).padStart(2, '0')}`;
-  const prev = inMonth(prevMonth);
+    const totalIncome = toMoney(data.cur.income);
+    const totalExpenses = toMoney(data.cur.expenses);
+    const prevIncome = toMoney(data.prev.income);
+    const prevExpenses = toMoney(data.prev.expenses);
+    const { best, worst } = bestAndWorst(data.dayRows);
 
-  const sum = (list, fn) => round2(list.reduce((s, r) => s + fn(r), 0));
-  const totalIncome = sum(cur, incomeOf);
-  const totalExpenses = sum(cur, expensesOf);
-  const balance = round2(totalIncome - totalExpenses);
+    // % change vs previous month. null = no baseline (previous month had none).
+    const pctChange = (now, before) => {
+      if (before === 0) return now === 0 ? 0 : null;
+      return round2(((now - before) / before) * 100);
+    };
 
-  // Top spending category this month.
-  const catTotals = EXPENSE_CATEGORIES.map((c) => ({
-    label: c.label,
-    amount: round2(cur.reduce((s, r) => s + r[c.key], 0)),
-  })).sort((a, b) => b.amount - a.amount);
-  const topCategory = catTotals[0] && catTotals[0].amount > 0 ? catTotals[0] : null;
-
-  // Best / worst day by balance.
-  let best = null;
-  let worst = null;
-  for (const r of cur) {
-    const bal = round2(balanceOf(r));
-    if (best === null || bal > best.balance) best = { date: r.date, balance: bal };
-    if (worst === null || bal < worst.balance) worst = { date: r.date, balance: bal };
-  }
-
-  // % change vs previous month. null = no baseline (previous month had none).
-  const pctChange = (now, before) => {
-    if (before === 0) return now === 0 ? 0 : null;
-    return round2(((now - before) / before) * 100);
-  };
-  const prevIncome = sum(prev, incomeOf);
-  const prevExpenses = sum(prev, expensesOf);
-
-  res.json({
-    month,
-    prevMonth,
-    hasData: cur.length > 0,
-    totalIncome,
-    totalExpenses,
-    balance,
-    topCategory,
-    bestDay: best,
-    worstDay: worst,
-    daysLogged: cur.length,
-    comparison: {
-      prevIncome,
-      prevExpenses,
-      incomeChange: pctChange(totalIncome, prevIncome),
-      expensesChange: pctChange(totalExpenses, prevExpenses),
-    },
-  });
-});
+    res.json({
+      month,
+      prevMonth,
+      hasData: data.dayRows.length > 0,
+      totalIncome,
+      totalExpenses,
+      balance: toMoney(data.cur.balance),
+      topCategory: data.top
+        ? {
+            id: data.top.id,
+            label: data.top.name,
+            color: data.top.color,
+            archived: Boolean(data.top.archived),
+            amount: toMoney(data.top.amount),
+          }
+        : null,
+      bestDay: best,
+      worstDay: worst,
+      daysLogged: data.dayRows.length,
+      comparison: {
+        prevIncome,
+        prevExpenses,
+        incomeChange: pctChange(totalIncome, prevIncome),
+        expensesChange: pctChange(totalExpenses, prevExpenses),
+      },
+    });
+  })
+);
 
 export default router;

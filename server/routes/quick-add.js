@@ -1,91 +1,141 @@
-import crypto from 'node:crypto';
 import { Router } from 'express';
-import { eq, sql } from 'drizzle-orm';
+import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import db from '../db.js';
-import { days } from '../schema.js';
-import { serializeDay } from '../serialize.js';
+import { categories, users } from '../schema.js';
+import { isCategoryKind } from '../lib/categories.js';
+import { todayStr } from '../lib/dates.js';
+import { parseAmount } from '../lib/money.js';
+import { hashQuickAddKey } from '../lib/quickAddKey.js';
+import {
+  HttpError,
+  MONEY_ERROR,
+  bodyOf,
+  insertTransaction,
+  parseId,
+  parseNote,
+  rangeTotals,
+  route,
+  undoLastQuickAdd,
+  withUserLock,
+} from '../lib/ledger.js';
+import { serializeTotals, serializeTransaction } from '../serialize.js';
 
+// Apple Shortcuts entry point. Mounted WITHOUT the JWT guard: each request is
+// authenticated by the caller's personal `X-API-Key`, whose sha256 is the only
+// thing stored (users.quick_add_key_hash). Keys are 256-bit random, so an exact
+// hash lookup is safe — there is nothing to brute-force or time.
 const router = Router();
 
-/** Constant-time string compare (avoids leaking the token via response timing). */
-function safeEqual(a, b) {
-  const ba = Buffer.from(String(a));
-  const bb = Buffer.from(String(b));
-  if (ba.length !== bb.length) return false;
-  return crypto.timingSafeEqual(ba, bb);
+const UNKNOWN_CATEGORY = 'Невідома категорія';
+
+async function requireQuickAddKey(req, res, next) {
+  const key = req.get('X-API-Key');
+  if (!key) return res.status(401).json({ error: 'Невірний ключ API' });
+  const [user] = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.quick_add_key_hash, hashQuickAddKey(key)))
+    .limit(1);
+  if (!user) return res.status(401).json({ error: 'Невірний ключ API' });
+  req.userId = user.id;
+  next();
 }
 
-// Shortcut category key -> days column to increment.
-const CATEGORY_COLUMN = {
-  food_out: 'expense_food_out',
-  food_market: 'expense_food_market',
-  no_reason: 'expense_no_reason',
-  gas: 'expense_gas',
-  wants: 'expense_wants',
-  health: 'expense_health',
-  income_main: 'income_main',
-  income_tips: 'income_tips',
-};
+/**
+ * Resolve the Shortcut's `category` to one of the caller's ACTIVE categories:
+ * a JSON number is an id; a string is a name (trimmed, case-insensitive via
+ * Postgres lower(), the same folding as the unique index), falling back to an id
+ * when it is all digits. `kind` narrows both matches. Anything else — unknown,
+ * archived, foreign, out of range — is one 400, so ids of other users are not
+ * distinguishable from missing ones.
+ */
+async function resolveCategory(tx, userId, raw, kind) {
+  const scope = [eq(categories.user_id, userId), isNull(categories.archived_at)];
+  if (kind) scope.push(eq(categories.kind, kind));
 
-function todayStr() {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+  const byId = async (value) => {
+    const id = parseId(value);
+    if (!id) throw new HttpError(400, UNKNOWN_CATEGORY);
+    const [row] = await tx
+      .select()
+      .from(categories)
+      .where(and(...scope, eq(categories.id, id)))
+      .limit(1);
+    if (!row) throw new HttpError(400, UNKNOWN_CATEGORY);
+    return row;
+  };
+
+  if (typeof raw === 'number') return byId(raw);
+  if (typeof raw !== 'string' || !raw.trim()) throw new HttpError(400, UNKNOWN_CATEGORY);
+
+  const name = raw.trim();
+  const matches = await tx
+    .select()
+    .from(categories)
+    .where(and(...scope, sql`lower(${categories.name}) = lower(${name}::text)`))
+    .orderBy(asc(categories.id));
+  // Active names are unique per kind, so two matches = one income + one expense.
+  if (matches.length > 1) {
+    throw new HttpError(400, 'Неоднозначна категорія: вкажіть kind (income або expense)');
+  }
+  if (matches.length === 1) return matches[0];
+  if (/^\d+$/.test(name)) return byId(name);
+  throw new HttpError(400, UNKNOWN_CATEGORY);
 }
 
-// POST /api/quick-add  — guarded by `X-API-Key: <QUICK_ADD_TOKEN>` (no JWT).
-// Body: { category, amount }. Increments today's column; keeps the day open.
-router.post('/', async (req, res) => {
-  const token = process.env.QUICK_ADD_TOKEN;
-  const provided = req.get('X-API-Key') || '';
-  if (!token || !safeEqual(provided, token)) {
-    return res.status(401).json({ error: 'Невірний ключ API' });
-  }
+// POST /api/quick-add  { category, amount, note?, kind? }
+// Adds a quick_add entry dated today (reopening today if it was closed) and
+// answers with today's totals.
+router.post(
+  '/',
+  requireQuickAddKey,
+  route(async (req, res) => {
+    const userId = req.userId;
+    const body = bodyOf(req);
 
-  const { category, amount } = req.body || {};
-  const column = CATEGORY_COLUMN[category];
-  if (!column) {
-    return res.status(400).json({ error: 'Невідома категорія' });
-  }
-  const value = Number(amount);
-  if (!Number.isFinite(value) || value <= 0) {
-    return res.status(400).json({ error: 'Сума має бути додатнім числом' });
-  }
-  const inc = Math.round(value * 100) / 100;
-  const date = todayStr();
+    let kind = null;
+    if (body.kind !== undefined && body.kind !== null) {
+      if (!isCategoryKind(body.kind)) throw new HttpError(400, 'Невірний тип категорії');
+      kind = body.kind;
+    }
+    const amount = parseAmount(body.amount);
+    if (!amount) throw new HttpError(400, MONEY_ERROR);
+    const note = parseNote(body.note);
+    if (note.error) throw new HttpError(400, note.error);
 
-  // Atomic upsert: create today's open day, or add to the existing column value.
-  await db
-    .insert(days)
-    .values({ date, [column]: inc, is_closed: false })
-    .onConflictDoUpdate({
-      target: days.date,
-      // Re-open the day too: quick-add keeps today editable in-app (a previously
-      // closed day is reopened rather than silently mutated behind a closed snapshot).
-      set: { [column]: sql`${days[column]} + ${inc}`, is_closed: false, updated_at: new Date() },
+    const date = todayStr();
+    const { row, totals } = await withUserLock(userId, async (tx) => {
+      // Resolved inside the lock so the category can't be archived mid-request.
+      const category = await resolveCategory(tx, userId, body.category, kind);
+      const inserted = await insertTransaction(tx, {
+        userId,
+        category,
+        date,
+        amount,
+        note: note.value,
+        source: 'quick_add',
+      });
+      return { row: inserted, totals: await rangeTotals(tx, userId, date, date) };
     });
 
-  const [row] = await db.select().from(days).where(eq(days.date, date)).limit(1);
-  const s = serializeDay(row);
-  const income = s.income_main + s.income_tips;
-  const expenses =
-    s.expense_food_out +
-    s.expense_food_market +
-    s.expense_no_reason +
-    s.expense_gas +
-    s.expense_wants +
-    s.expense_health;
-  res.json({
-    ok: true,
-    date,
-    totals: {
-      income: Math.round(income * 100) / 100,
-      expenses: Math.round(expenses * 100) / 100,
-      balance: Math.round((income - expenses) * 100) / 100,
-    },
-  });
-});
+    res.json({
+      ok: true,
+      date,
+      transaction: serializeTransaction(row),
+      totals: serializeTotals(totals),
+    });
+  })
+);
+
+// DELETE /api/quick-add/last — undo the key owner's latest quick-add of today.
+router.delete(
+  '/last',
+  requireQuickAddKey,
+  route(async (req, res) => {
+    const result = await undoLastQuickAdd(req.userId);
+    if (!result) throw new HttpError(404, 'Немає швидких записів за сьогодні');
+    res.json({ ok: true, ...result });
+  })
+);
 
 export default router;
