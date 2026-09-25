@@ -77,6 +77,25 @@ export default function CalendarHeatmap() {
     return { weeks: buildWeeks(year, map), maxAbs: max, hasData: data.length > 0 };
   }, [data, year]);
 
+  // One label per month, placed on the week column that CONTAINS the 1st of that
+  // month (per spec). day===1 matches exactly one week per month, so labels are
+  // unique by construction — no duplicate "січ січ" — and each lines up 1:1 with
+  // its week column in the grid below.
+  const monthLabels = useMemo(() => {
+    const seen = new Set();
+    return weeks.map((w) => {
+      const firstOfMonth = w.find((d) => d.inYear && d.day === 1);
+      if (firstOfMonth && !seen.has(firstOfMonth.month)) {
+        seen.add(firstOfMonth.month);
+        return MONTHS_SHORT[firstOfMonth.month];
+      }
+      return '';
+    });
+  }, [weeks]);
+
+  // Flatten week-by-week (Mon→Sun) so a single column-flow grid renders them.
+  const cells = useMemo(() => weeks.flat(), [weeks]);
+
   return (
     <section className="card calendar-card">
       <div className="calendar-head">
@@ -98,41 +117,33 @@ export default function CalendarHeatmap() {
         <div className="stats-placeholder small">Немає записів за {year} рік 📅</div>
       ) : (
         <div className="calendar-scroll">
-          <div className="calendar-months">
-            {weeks.map((w, i) => {
-              // Use the first in-year cell of the column, not w[0] (which can be a
-              // previous-December padding day, which would drop the January label).
-              const firstInYear = w.find((c) => c.inYear);
-              const label =
-                firstInYear && firstInYear.day <= 7 ? MONTHS_SHORT[firstInYear.month] : '';
-              return <span key={i} className="calendar-month-label">{label}</span>;
-            })}
-          </div>
-          <div className="calendar-body">
+          <div className="calendar-grid-wrap">
+            <div className="calendar-corner" />
+            <div className="calendar-months">
+              {monthLabels.map((label, i) => (
+                <span key={i} className="calendar-month-label">{label}</span>
+              ))}
+            </div>
             <div className="calendar-weekdays">
               {WEEKDAY_LABELS.map((l, i) => (
                 <span key={i} className="calendar-weekday">{l}</span>
               ))}
             </div>
-            <div className="calendar-grid">
-              {weeks.map((week, wi) => (
-                <div key={wi} className="calendar-week">
-                  {week.map((cell) => (
-                    <div
-                      key={cell.date}
-                      className={`calendar-cell ${cell.inYear ? '' : 'calendar-cell-out'} ${
-                        cell.balance !== null ? 'calendar-cell-has' : ''
-                      }`}
-                      style={{ background: cell.inYear ? cellColor(cell.balance, maxAbs) : 'transparent' }}
-                      onMouseEnter={(e) =>
-                        cell.inYear && cell.balance !== null &&
-                        setHover({ date: cell.date, balance: cell.balance, x: e.clientX, y: e.clientY })
-                      }
-                      onMouseLeave={() => setHover(null)}
-                      onClick={() => cell.balance !== null && navigate(`/day/${cell.date}`)}
-                    />
-                  ))}
-                </div>
+            <div className="calendar-cells">
+              {cells.map((cell) => (
+                <div
+                  key={cell.date}
+                  className={`calendar-cell ${cell.inYear ? '' : 'calendar-cell-out'} ${
+                    cell.balance !== null ? 'calendar-cell-has' : ''
+                  }`}
+                  style={{ background: cell.inYear ? cellColor(cell.balance, maxAbs) : 'transparent' }}
+                  onMouseEnter={(e) =>
+                    cell.inYear && cell.balance !== null &&
+                    setHover({ date: cell.date, balance: cell.balance, x: e.clientX, y: e.clientY })
+                  }
+                  onMouseLeave={() => setHover(null)}
+                  onClick={() => cell.balance !== null && navigate(`/day/${cell.date}`)}
+                />
               ))}
             </div>
           </div>
