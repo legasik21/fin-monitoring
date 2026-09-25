@@ -5,15 +5,8 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1782238974343,
-      "tag": "0000_magenta_shooting_star",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1782239251762,
-      "tag": "0001_spotty_skrulls",
+      "when": 1790355539965,
+      "tag": "0000_baseline",
       "breakpoints": true
     }
   ]
