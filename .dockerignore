@@ -10,3 +10,6 @@ database.sqlite
 database.sqlite-shm
 database.sqlite-wal
 server/database.sqlite*
+server/test
+.scratch
+docs

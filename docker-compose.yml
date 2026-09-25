@@ -44,9 +44,7 @@ services:
       TZ: Europe/Kyiv
       PORT: "3001"
       DATABASE_URL: ${DATABASE_URL}
-      APP_PASSWORD: ${APP_PASSWORD}
       JWT_SECRET: ${JWT_SECRET}
-      QUICK_ADD_TOKEN: ${QUICK_ADD_TOKEN}
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3001/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
       interval: 30s
