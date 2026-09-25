@@ -8,7 +8,8 @@
     "dev": "node --watch index.js",
     "start": "node index.js",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "node migrate.js"
+    "db:migrate": "node migrate.js",
+    "test": "node --test --test-reporter=spec \"test/**/*.test.js\""
   },
   "dependencies": {
     "cors": "^2.8.6",
