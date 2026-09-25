@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { getMonthly } from '../api.js';
-import { formatUAH } from '../utils/format.js';
+import { formatUAH, formatBalance } from '../utils/format.js';
 import { formatShortDate } from '../utils/dates.js';
+import { categoryLabel } from '../utils/categories.js';
 
 const MONTHS_FULL = [
   'Січень', 'Лютий', 'Березень', 'Квітень', 'Травень', 'Червень',
@@ -58,6 +59,7 @@ export default function MonthlyReport() {
         <input
           type="month"
           className="monthly-picker"
+          aria-label="Місяць звіту"
           value={month}
           max={currentMonthStr()}
           onChange={(e) => e.target.value && setMonth(e.target.value)}
@@ -94,14 +96,21 @@ export default function MonthlyReport() {
           <ul className="monthly-facts">
             <li>
               <span>🏆 Найбільша категорія витрат</span>
-              <strong>
-                {data.topCategory ? `${data.topCategory.label} — ${formatUAH(data.topCategory.amount)}` : '—'}
+              <strong className="monthly-top-cat">
+                {data.topCategory ? (
+                  <>
+                    <span className="dot" style={{ background: data.topCategory.color }} aria-hidden="true" />
+                    {categoryLabel(data.topCategory)} — {formatUAH(data.topCategory.amount)}
+                  </>
+                ) : (
+                  '—'
+                )}
               </strong>
             </li>
             <li>
               <span>📈 Найкращий день</span>
-              <strong className="positive">
-                {data.bestDay ? `${formatShortDate(data.bestDay.date)} (+${formatUAH(data.bestDay.balance)})` : '—'}
+              <strong className={data.bestDay && data.bestDay.balance < 0 ? 'negative' : 'positive'}>
+                {data.bestDay ? `${formatShortDate(data.bestDay.date)} (${formatBalance(data.bestDay.balance)})` : '—'}
               </strong>
             </li>
             <li>

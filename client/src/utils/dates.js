@@ -24,6 +24,13 @@ export function parseDate(str) {
   return new Date(y, m - 1, d);
 }
 
+// A real calendar date in YYYY-MM-DD form (rejects 2025-02-30, 2025-13-01, …) —
+// same rule as the server, so a bad /day/:date URL is caught before rendering.
+export function isValidDateStr(str) {
+  if (typeof str !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(str)) return false;
+  return toDateStr(parseDate(str)) === str;
+}
+
 // "Понеділок, 26 травня 2025"
 export function formatLongDate(str) {
   const d = parseDate(str);

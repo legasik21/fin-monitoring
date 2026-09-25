@@ -1,26 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getAllDays, getDay, closeDay, clearToken, getStreak, getGoals } from '../api.js';
+import { getAllDays, clearToken, getStreak, getGoals, getMe } from '../api.js';
 import { todayStr, formatShortDate } from '../utils/dates.js';
-import { formatUAH, toAmount } from '../utils/format.js';
+import { formatUAH, formatBalance } from '../utils/format.js';
 import { randomQuote } from '../constants.js';
-
-function balanceOf(row) {
-  const income = toAmount(row.income_main) + toAmount(row.income_tips);
-  const expenses =
-    toAmount(row.expense_food_out) +
-    toAmount(row.expense_food_market) +
-    toAmount(row.expense_no_reason) +
-    toAmount(row.expense_gas) +
-    toAmount(row.expense_wants) +
-    toAmount(row.expense_health);
-  return income - expenses;
-}
 
 export default function WelcomePage() {
   const navigate = useNavigate();
   const quote = useMemo(() => randomQuote(), []);
-  const [today, setToday] = useState(null); // today's record or null
+  const [me, setMe] = useState(null);
+  const [today, setToday] = useState(null); // today's DaySummary or null
   const [lastClosed, setLastClosed] = useState(null);
   const [streak, setStreak] = useState(null); // { current, longest }
   const [nearestGoal, setNearestGoal] = useState(null);
@@ -29,14 +18,17 @@ export default function WelcomePage() {
 
   const refresh = async () => {
     const date = todayStr();
-    const [allDays, todayRow, streakData, goals] = await Promise.all([
+    const [allDays, streakData, goals, user] = await Promise.all([
       getAllDays().catch(() => []),
-      getDay(date).catch(() => null),
       getStreak().catch(() => null),
       getGoals().catch(() => []),
+      getMe().catch(() => null),
     ]);
     if (!mountedRef.current) return; // component unmounted mid-fetch
-    setToday(todayRow);
+    setMe(user);
+    // A day row for today exists once anything was recorded (or it was closed);
+    // that decides the label of the single "go to today" button.
+    setToday(allDays.find((d) => d.date === date) || null);
     const closed = allDays
       .filter((d) => d.is_closed === 1)
       .sort((a, b) => b.date.localeCompare(a.date));
@@ -58,40 +50,31 @@ export default function WelcomePage() {
     };
   }, []);
 
-  const canContinue = today && today.is_closed === 0;
-
-  const handleStartNewDay = async () => {
-    const date = todayStr();
-    if (today) {
-      if (today.is_closed === 1) {
-        const ok = window.confirm('Сьогоднішній день вже завершено. Хочете перезаписати?');
-        if (!ok) return;
-      } else {
-        // Open session exists — finalise it before starting fresh.
-        await closeDay(date).catch(() => {});
-      }
-    }
-    navigate('/day?fresh=1');
-  };
-
-  const handleContinue = () => {
-    if (!canContinue) return;
-    navigate('/day');
-  };
-
   const handleLogout = () => {
     clearToken();
     navigate('/login', { replace: true });
   };
 
-  const lastBalance = lastClosed ? balanceOf(lastClosed) : null;
+  // Balance comes from the server's DaySummary — the client never sums money.
+  const lastBalance = lastClosed ? lastClosed.balance : null;
 
   return (
     <div className="page welcome">
-      <button className="btn btn-ghost btn-sm logout-btn" onClick={handleLogout}>
-        Вийти
-      </button>
       <div className="welcome-inner fade-in-up">
+        <div className="welcome-topbar">
+          <span className="user-email" title={me?.email}>
+            {me?.email || ' '}
+          </span>
+          <div className="welcome-topbar-actions">
+            <button className="btn btn-ghost btn-sm" onClick={() => navigate('/settings')}>
+              ⚙️ Налаштування
+            </button>
+            <button className="btn btn-ghost btn-sm" onClick={handleLogout}>
+              Вийти
+            </button>
+          </div>
+        </div>
+
         <header className="welcome-header">
           <div className="logo-badge">₴</div>
           <h1>Фінансовий моніторинг</h1>
@@ -119,17 +102,18 @@ export default function WelcomePage() {
         )}
 
         <div className="welcome-actions">
-          <button className="btn btn-primary btn-lg" onClick={handleStartNewDay}>
-            <span className="btn-emoji">🌅</span> Почати новий день
-          </button>
-
-          <button
-            className="btn btn-secondary btn-lg"
-            onClick={handleContinue}
-            disabled={!canContinue}
-            title={!canContinue ? 'Сьогодні ще немає записів' : undefined}
-          >
-            <span className="btn-emoji">📝</span> Продовжити сьогодні
+          {/* Entries are saved one by one, so there is nothing to overwrite or
+              auto-close: both labels simply open today's ledger. */}
+          <button className="btn btn-primary btn-lg" onClick={() => navigate('/day')} disabled={loading}>
+            {today ? (
+              <>
+                <span className="btn-emoji">📝</span> Продовжити сьогодні
+              </>
+            ) : (
+              <>
+                <span className="btn-emoji">🌅</span> Почати новий день
+              </>
+            )}
           </button>
 
           <button className="btn btn-ghost btn-lg" onClick={() => navigate('/stats')}>
@@ -170,8 +154,7 @@ export default function WelcomePage() {
             <div className="last-day-body">
               <span className="last-day-date">{formatShortDate(lastClosed.date)}</span>
               <span className={`last-day-balance ${lastBalance >= 0 ? 'positive' : 'negative'}`}>
-                {lastBalance >= 0 ? '+' : ''}
-                {formatUAH(lastBalance)}
+                {formatBalance(lastBalance)}
               </span>
             </div>
           ) : (

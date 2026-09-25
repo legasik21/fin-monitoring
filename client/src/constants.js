@@ -1,49 +1,21 @@
-export const INCOME_FIELDS = [
-  { key: 'income_main', label: 'Основний дохід', placeholder: 'напр. зарплата, фріланс' },
-  { key: 'income_tips', label: 'Чайові / бонуси', placeholder: 'додаткові надходження' },
-];
+// Mirrors of the server-side rules (server/lib/categories.js, docs/API.md). The
+// server stays authoritative — these only drive counters, disabled buttons and
+// early hints, and every server `error` message is still shown as-is.
 
-export const EXPENSE_FIELDS = [
-  {
-    key: 'expense_food_out',
-    label: 'Їжа (кафе, ресторани)',
-    icon: '🍽️',
-    placeholder: 'скільки витратив на їжу поза домом',
-  },
-  {
-    key: 'expense_food_market',
-    label: 'Продукти (магазин)',
-    icon: '🛒',
-    placeholder: 'супермаркет, ринок',
-  },
-  {
-    key: 'expense_no_reason',
-    label: 'Витрати «ні за що»',
-    icon: '🤷',
-    placeholder: 'дрібниці, імпульсивні покупки',
-  },
-  {
-    key: 'expense_gas',
-    label: 'Пальне',
-    icon: '⛽',
-    placeholder: 'заправка, пальне',
-  },
-  {
-    key: 'expense_wants',
-    label: 'Фізичні хотілки',
-    icon: '🛍️',
-    placeholder: 'гаджети, одяг, парфуми...',
-  },
-  {
-    key: 'expense_health',
-    label: "Здоров'я",
-    icon: '🏥',
-    placeholder: 'аптека, лікар, спортзал, добавки',
-  },
-];
+// Max ACTIVE categories per kind (archived ones do not count).
+export const CATEGORY_LIMITS = { income: 5, expense: 10 };
 
-// All amount columns, used by the statistics table header/rows.
-export const ALL_AMOUNT_FIELDS = [...INCOME_FIELDS, ...EXPENSE_FIELDS];
+export const CATEGORY_NAME_MAX = 50;
+export const NOTE_MAX = 200;
+export const PASSWORD_MIN = 8;
+export const PASSWORD_MAX = 128;
+
+// What the server creates for a kind left empty at registration.
+export const DEFAULT_CATEGORY_NAMES = { income: 'Дохід', expense: 'Витрати' };
+
+export const CATEGORY_KINDS = ['income', 'expense'];
+
+export const KIND_LABELS = { income: 'Доходи', expense: 'Витрати' };
 
 export const QUOTES = [
   'Гроші люблять рахунок 💰',

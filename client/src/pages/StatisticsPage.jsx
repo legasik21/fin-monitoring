@@ -15,7 +15,8 @@ import {
 } from 'recharts';
 import { getStats } from '../api.js';
 import { formatShortDate } from '../utils/dates.js';
-import { formatUAH, formatNumber, toAmount } from '../utils/format.js';
+import { formatUAH, formatNumber, formatBalance } from '../utils/format.js';
+import { categoryLabel } from '../utils/categories.js';
 import CalendarHeatmap from '../components/CalendarHeatmap.jsx';
 import MonthlyReport from '../components/MonthlyReport.jsx';
 
@@ -31,37 +32,14 @@ const RANGES = [
   { key: 'month', label: 'Місяць' },
 ];
 
-const TABLE_COLS = [
-  { key: 'income_main', label: 'Дохід' },
-  { key: 'income_tips', label: 'Чайові' },
-  { key: 'expense_food_out', label: 'Їжа' },
-  { key: 'expense_food_market', label: 'Продукти' },
-  { key: 'expense_no_reason', label: '«Ні за що»' },
-  { key: 'expense_gas', label: 'Пальне' },
-  { key: 'expense_wants', label: 'Фіз. хотілки' },
-  { key: 'expense_health', label: "Здоров'я" },
-];
-
-function rowBalance(r) {
-  const income = toAmount(r.income_main) + toAmount(r.income_tips);
-  const expenses =
-    toAmount(r.expense_food_out) +
-    toAmount(r.expense_food_market) +
-    toAmount(r.expense_no_reason) +
-    toAmount(r.expense_gas) +
-    toAmount(r.expense_wants) +
-    toAmount(r.expense_health);
-  return income - expenses;
-}
-
 function ChartTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null;
   return (
     <div className="chart-tooltip">
       <div className="chart-tooltip-label">{label}</div>
       {payload.map((p) => (
-        <div key={p.dataKey} className="chart-tooltip-row">
-          <span className="dot" style={{ background: p.color || p.fill }} />
+        <div key={p.dataKey ?? p.name} className="chart-tooltip-row">
+          <span className="dot" style={{ background: p.color || p.fill || p.payload?.fill }} />
           <span>{p.name}:</span>
           <strong>{formatUAH(p.value)}</strong>
         </div>
@@ -90,7 +68,13 @@ export default function StatisticsPage() {
     };
   }, [range, view]);
 
-  const pieData = (data?.categories || []).filter((c) => c.value > 0);
+  // Colours and category order come from the server; archived categories stay in
+  // the breakdown (they still have entries in the window), just labelled.
+  const pieData = (data?.categories || [])
+    .filter((c) => c.value > 0)
+    .map((c) => ({ ...c, name: categoryLabel(c), fill: c.color }));
+  // Per-user table columns (income categories, then expense), keyed by category id.
+  const columns = data?.columns || [];
 
   return (
     <div className="page">
@@ -150,8 +134,12 @@ export default function StatisticsPage() {
                 <div className="stat-card-label">Найкращий день</div>
                 {data.summary.bestDay ? (
                   <>
-                    <div className="stat-card-value positive">
-                      +{formatUAH(data.summary.bestDay.balance)}
+                    <div
+                      className={`stat-card-value ${
+                        data.summary.bestDay.balance >= 0 ? 'positive' : 'negative'
+                      }`}
+                    >
+                      {formatBalance(data.summary.bestDay.balance)}
                     </div>
                     <div className="stat-card-sub">{formatShortDate(data.summary.bestDay.date)}</div>
                   </>
@@ -208,7 +196,7 @@ export default function StatisticsPage() {
                         <Pie
                           data={pieData}
                           dataKey="value"
-                          nameKey="label"
+                          nameKey="name"
                           cx="50%"
                           cy="50%"
                           innerRadius={55}
@@ -227,7 +215,7 @@ export default function StatisticsPage() {
                       {pieData.map((c) => (
                         <li key={c.key}>
                           <span className="dot" style={{ background: c.color }} />
-                          <span className="pie-legend-label">{c.label}</span>
+                          <span className="pie-legend-label">{c.name}</span>
                           <span className="pie-legend-percent">{formatNumber(c.percent)}%</span>
                           <span className="pie-legend-amount">{formatUAH(c.value)}</span>
                         </li>
@@ -246,8 +234,13 @@ export default function StatisticsPage() {
                   <thead>
                     <tr>
                       <th>Дата</th>
-                      {TABLE_COLS.map((c) => (
-                        <th key={c.key}>{c.label}</th>
+                      {columns.map((c) => (
+                        <th key={c.key} className={c.archived ? 'th-archived' : undefined}>
+                          <span className="th-cat">
+                            <span className="dot" style={{ background: c.color }} aria-hidden="true" />
+                            {categoryLabel(c)}
+                          </span>
+                        </th>
                       ))}
                       <th>Баланс</th>
                       <th></th>
@@ -255,13 +248,14 @@ export default function StatisticsPage() {
                   </thead>
                   <tbody>
                     {data.days.map((row) => {
-                      const bal = rowBalance(row);
+                      // Balance is summed in SQL; a category missing from `amounts` means 0.
+                      const bal = row.balance;
                       return (
                         <tr key={row.date} className={bal >= 0 ? 'row-positive' : 'row-negative'}>
                           <td>{formatShortDate(row.date)}</td>
-                          {TABLE_COLS.map((c) => (
+                          {columns.map((c) => (
                             <td key={c.key} className="num">
-                              {formatNumber(row[c.key])}
+                              {formatNumber(row.amounts?.[c.key] ?? 0)}
                             </td>
                           ))}
                           <td className={`num strong ${bal >= 0 ? 'positive' : 'negative'}`}>
@@ -272,6 +266,7 @@ export default function StatisticsPage() {
                             <button
                               className="btn btn-ghost btn-sm"
                               onClick={() => navigate(`/day/${row.date}`)}
+                              aria-label={`Переглянути ${formatShortDate(row.date)}`}
                             >
                               Переглянути
                             </button>

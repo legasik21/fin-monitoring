@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getGoals, createGoal, updateGoal, deleteGoal } from '../api.js';
+import { getGoals, createGoal, updateGoal, deleteGoal, apiError } from '../api.js';
 import { formatUAH, toAmount } from '../utils/format.js';
 
 function GoalCard({ goal, onContribute, onDelete }) {
@@ -18,8 +18,8 @@ function GoalCard({ goal, onContribute, onDelete }) {
       await onContribute(goal.id, value);
       setAmount('');
       setOpen(false);
-    } catch {
-      setErr('Не вдалося додати внесок');
+    } catch (e) {
+      setErr(apiError(e, 'Не вдалося додати внесок'));
     } finally {
       setBusy(false);
     }
@@ -32,7 +32,14 @@ function GoalCard({ goal, onContribute, onDelete }) {
           {goal.achieved && <span className="goal-check" aria-hidden="true">✅</span>}
           {goal.title}
         </h3>
-        <button className="goal-del" title="Видалити" onClick={() => onDelete(goal)}>✕</button>
+        <button
+          className="goal-del"
+          title="Видалити"
+          aria-label={`Видалити ціль «${goal.title}»`}
+          onClick={() => onDelete(goal)}
+        >
+          ✕
+        </button>
       </div>
 
       <div className="goal-progress">
@@ -61,6 +68,7 @@ function GoalCard({ goal, onContribute, onDelete }) {
               step="0.01"
               inputMode="decimal"
               placeholder="Сума внеску"
+              aria-label={`Сума внеску для «${goal.title}»`}
               value={amount}
               autoFocus
               onChange={(e) => setAmount(e.target.value)}
@@ -121,8 +129,8 @@ export default function GoalsPage() {
       setTitle('');
       setTarget('');
       await refresh();
-    } catch {
-      setError('Не вдалося створити ціль');
+    } catch (err) {
+      setError(apiError(err, 'Не вдалося створити ціль'));
     } finally {
       setCreating(false);
     }
@@ -138,8 +146,8 @@ export default function GoalsPage() {
     try {
       await deleteGoal(goal.id);
       await refresh();
-    } catch {
-      window.alert('Не вдалося видалити ціль');
+    } catch (err) {
+      window.alert(apiError(err, 'Не вдалося видалити ціль'));
     }
   };
 
