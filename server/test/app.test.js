@@ -41,3 +41,23 @@ test('malformed JSON body -> 400 Невірний формат запиту', as
   assert.strictEqual(res.status, 400);
   assert.strictEqual(res.body.error, MESSAGES.BAD_REQUEST_BODY);
 });
+
+test('a JSON body over 100 kB to POST /api/auth/register -> 413 Невірний формат запиту', async () => {
+  const res = await ctx.client.post('/api/auth/register', {
+    email: 'oversized@example.com',
+    password: 'password123',
+    padding: 'x'.repeat(150_000), // well past express.json()'s default 100kb limit
+  });
+  assert.strictEqual(res.status, 413);
+  assert.strictEqual(res.body.error, MESSAGES.BAD_REQUEST_BODY);
+});
+
+test('unmatched /api routes -> 404 JSON for non-GET methods too, including under a mounted sub-router', async () => {
+  const del = await ctx.client.del('/api/nope');
+  assert.strictEqual(del.status, 404);
+  assert.strictEqual(del.body.error, MESSAGES.NOT_FOUND_ROUTE);
+
+  const authNope = await ctx.client.post('/api/auth/nope', {});
+  assert.strictEqual(authNope.status, 404);
+  assert.strictEqual(authNope.body.error, MESSAGES.NOT_FOUND_ROUTE);
+});

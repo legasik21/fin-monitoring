@@ -9,7 +9,13 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { startApp, stopApp, closePool, registerUser, uniqueEmail, MESSAGES } from './helpers.js';
-import { CATEGORY_LIMITS, kindLimitError, DEFAULT_CATEGORY_NAMES } from '../lib/categories.js';
+import {
+  CATEGORY_LIMITS,
+  CATEGORY_NAME_MAX,
+  DEFAULT_CATEGORY_NAMES,
+  kindLimitError,
+  normalizeCategoryName,
+} from '../lib/categories.js';
 
 let ctx;
 
@@ -250,4 +256,65 @@ test('PUT /api/categories/order with a set that is not exactly the active catego
   );
   assert.strictEqual(res.status, 400);
   assert.strictEqual(res.body.error, MESSAGES.CATEGORY_ORDER_ERROR);
+});
+
+test('an invalid kind -> 400 on POST /api/categories and PUT /api/categories/order', async () => {
+  const { token } = await registerUser(ctx.client);
+
+  const create = await ctx.client.post('/api/categories', { kind: 'bogus', name: 'Щось' }, { token });
+  assert.strictEqual(create.status, 400);
+  assert.strictEqual(create.body.error, MESSAGES.CATEGORY_KIND_ERROR);
+
+  const order = await ctx.client.put('/api/categories/order', { kind: 'bogus', ids: [] }, { token });
+  assert.strictEqual(order.status, 400);
+  assert.strictEqual(order.body.error, MESSAGES.CATEGORY_KIND_ERROR);
+});
+
+test('a whitespace-only name is rejected on create and rename', async () => {
+  const { token } = await registerUser(ctx.client);
+  const { error } = normalizeCategoryName('   ');
+
+  const created = await ctx.client.post('/api/categories', { kind: 'expense', name: '   ' }, { token });
+  assert.strictEqual(created.status, 400);
+  assert.strictEqual(created.body.error, error);
+
+  const real = await ctx.client.post('/api/categories', { kind: 'expense', name: 'Справжня назва' }, { token });
+  assert.strictEqual(real.status, 201);
+  const renamed = await ctx.client.patch(`/api/categories/${real.body.id}`, { name: '   ' }, { token });
+  assert.strictEqual(renamed.status, 400);
+  assert.strictEqual(renamed.body.error, error);
+});
+
+test('a name of 51 code points is rejected on create and rename with the length-limit message', async () => {
+  const { token } = await registerUser(ctx.client);
+  const tooLong = 'а'.repeat(CATEGORY_NAME_MAX + 1);
+  assert.strictEqual([...tooLong].length, CATEGORY_NAME_MAX + 1);
+  const { error } = normalizeCategoryName(tooLong);
+
+  const created = await ctx.client.post('/api/categories', { kind: 'expense', name: tooLong }, { token });
+  assert.strictEqual(created.status, 400);
+  assert.strictEqual(created.body.error, error);
+
+  const real = await ctx.client.post('/api/categories', { kind: 'expense', name: 'Ще одна назва' }, { token });
+  assert.strictEqual(real.status, 201);
+  const renamed = await ctx.client.patch(`/api/categories/${real.body.id}`, { name: tooLong }, { token });
+  assert.strictEqual(renamed.status, 400);
+  assert.strictEqual(renamed.body.error, error);
+});
+
+test('a name of exactly 50 code points including an emoji is accepted on create and rename', async () => {
+  const { token } = await registerUser(ctx.client);
+  const name = `😀${'б'.repeat(CATEGORY_NAME_MAX - 1)}`;
+  assert.strictEqual([...name].length, CATEGORY_NAME_MAX);
+
+  const created = await ctx.client.post('/api/categories', { kind: 'expense', name }, { token });
+  assert.strictEqual(created.status, 201);
+  assert.strictEqual(created.body.name, name);
+
+  const other = await ctx.client.post('/api/categories', { kind: 'expense', name: 'Проміжна назва' }, { token });
+  assert.strictEqual(other.status, 201);
+  const renameTo = `😀${'в'.repeat(CATEGORY_NAME_MAX - 1)}`;
+  const renamed = await ctx.client.patch(`/api/categories/${other.body.id}`, { name: renameTo }, { token });
+  assert.strictEqual(renamed.status, 200);
+  assert.strictEqual(renamed.body.name, renameTo);
 });

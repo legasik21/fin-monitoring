@@ -94,3 +94,86 @@ test('POST /api/goals validates the title and the target amount', async () => {
   assert.strictEqual(badTarget.status, 400);
   assert.strictEqual(badTarget.body.error, MESSAGES.GOAL_TARGET_ERROR);
 });
+
+test('PATCH /api/goals/:id updates the title (trimmed) and rejects empty/too-long titles', async () => {
+  const { token } = await registerUser(ctx.client);
+  const created = await ctx.client.post('/api/goals', { title: 'Стара назва', target_amount: 100 }, { token });
+  assert.strictEqual(created.status, 201);
+  const goalId = created.body.id;
+
+  const renamed = await ctx.client.patch(`/api/goals/${goalId}`, { title: '  Нова назва  ' }, { token });
+  assert.strictEqual(renamed.status, 200);
+  assert.strictEqual(renamed.body.title, 'Нова назва');
+
+  const empty = await ctx.client.patch(`/api/goals/${goalId}`, { title: '   ' }, { token });
+  assert.strictEqual(empty.status, 400);
+  assert.strictEqual(empty.body.error, MESSAGES.GOAL_TITLE_REQUIRED);
+
+  const tooLong = await ctx.client.patch(`/api/goals/${goalId}`, { title: 'а'.repeat(201) }, { token });
+  assert.strictEqual(tooLong.status, 400);
+  assert.strictEqual(tooLong.body.error, MESSAGES.GOAL_TITLE_LONG);
+});
+
+test('PATCH /api/goals/:id validates target_amount (<= 0 -> 400) and sets current_amount absolutely, including 0', async () => {
+  const { token } = await registerUser(ctx.client);
+  const created = await ctx.client.post('/api/goals', { title: 'Ціль з сумою', target_amount: 200 }, { token });
+  assert.strictEqual(created.status, 201);
+  const goalId = created.body.id;
+
+  const zeroTarget = await ctx.client.patch(`/api/goals/${goalId}`, { target_amount: 0 }, { token });
+  assert.strictEqual(zeroTarget.status, 400);
+  assert.strictEqual(zeroTarget.body.error, MESSAGES.GOAL_TARGET_ERROR);
+
+  const negativeTarget = await ctx.client.patch(`/api/goals/${goalId}`, { target_amount: -10 }, { token });
+  assert.strictEqual(negativeTarget.status, 400);
+  assert.strictEqual(negativeTarget.body.error, MESSAGES.GOAL_TARGET_ERROR);
+
+  const contributed = await ctx.client.patch(`/api/goals/${goalId}`, { contribute: 150 }, { token });
+  assert.strictEqual(contributed.status, 200);
+  assert.strictEqual(contributed.body.current_amount, 150);
+
+  // current_amount sets the absolute value (not an addition), 0 included.
+  const reset = await ctx.client.patch(`/api/goals/${goalId}`, { current_amount: 0 }, { token });
+  assert.strictEqual(reset.status, 200);
+  assert.strictEqual(reset.body.current_amount, 0);
+  assert.strictEqual(reset.body.achieved, false);
+});
+
+test('achieved is re-evaluated when target_amount drops below the existing current_amount', async () => {
+  const { token } = await registerUser(ctx.client);
+  const created = await ctx.client.post('/api/goals', { title: 'Ціль що досягається', target_amount: 500 }, { token });
+  assert.strictEqual(created.status, 201);
+  const goalId = created.body.id;
+
+  const funded = await ctx.client.patch(`/api/goals/${goalId}`, { current_amount: 300 }, { token });
+  assert.strictEqual(funded.status, 200);
+  assert.strictEqual(funded.body.achieved, false);
+
+  const loweredTarget = await ctx.client.patch(`/api/goals/${goalId}`, { target_amount: 200 }, { token });
+  assert.strictEqual(loweredTarget.status, 200);
+  assert.strictEqual(loweredTarget.body.current_amount, 300);
+  assert.strictEqual(loweredTarget.body.achieved, true);
+});
+
+test('a contribution that would push current_amount above the max amount -> 400, not 500, and leaves the goal unchanged', async () => {
+  const { token } = await registerUser(ctx.client);
+  const created = await ctx.client.post(
+    '/api/goals',
+    { title: 'Величезна ціль', target_amount: 999999999999.99 },
+    { token }
+  );
+  assert.strictEqual(created.status, 201);
+  const goalId = created.body.id;
+
+  const setNearMax = await ctx.client.patch(`/api/goals/${goalId}`, { current_amount: 999999999999.98 }, { token });
+  assert.strictEqual(setNearMax.status, 200);
+  assert.strictEqual(setNearMax.body.current_amount, 999999999999.98);
+
+  const overflow = await ctx.client.patch(`/api/goals/${goalId}`, { contribute: 0.5 }, { token });
+  assert.strictEqual(overflow.status, 400);
+  assert.strictEqual(overflow.body.error, MESSAGES.MONEY_ERROR);
+
+  const unchanged = await ctx.client.get(`/api/goals/${goalId}`, { token });
+  assert.strictEqual(unchanged.status, 200);
+  assert.strictEqual(unchanged.body.current_amount, 999999999999.98);
+});

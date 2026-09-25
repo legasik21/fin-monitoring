@@ -130,6 +130,20 @@ test('an archived category -> 400 Невідома категорія', async ()
   assert.strictEqual(res.body.error, MESSAGES.QUICK_ADD_UNKNOWN_CATEGORY);
 });
 
+test('POST /api/quick-add rejects an invalid kind', async () => {
+  const { token } = await registerUser(ctx.client);
+  const key = await issueQuickAddKey(ctx.client, token);
+  const expense = await getCategory(token, 'expense');
+
+  const res = await ctx.client.post(
+    '/api/quick-add',
+    { category: expense.id, amount: 10, kind: 'bogus' },
+    { apiKey: key }
+  );
+  assert.strictEqual(res.status, 400);
+  assert.strictEqual(res.body.error, MESSAGES.CATEGORY_KIND_ERROR);
+});
+
 test('an ambiguous name across kinds requires `kind` to disambiguate', async () => {
   const { token } = await registerUser(ctx.client);
   const key = await issueQuickAddKey(ctx.client, token);

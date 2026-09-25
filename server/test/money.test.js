@@ -11,6 +11,7 @@ import {
   registerUser,
   issueQuickAddKey,
   addDaysStr,
+  MESSAGES,
 } from './helpers.js';
 
 let ctx;
@@ -83,4 +84,33 @@ test('a decimal-comma string "12,5" is accepted and stored as 12.5', async () =>
   const res = await ctx.client.post('/api/transactions', { category_id: expense.id, amount: '12,5' }, { token });
   assert.strictEqual(res.status, 201);
   assert.strictEqual(res.body.transaction.amount, 12.5);
+});
+
+test('the max amount (999999999999.99) is accepted; one cent above it is rejected as a number and as a string', async () => {
+  const { token } = await registerUser(ctx.client);
+  const expense = await getCategory(token, 'expense');
+
+  const atMax = await ctx.client.post(
+    '/api/transactions',
+    { category_id: expense.id, amount: 999999999999.99 },
+    { token }
+  );
+  assert.strictEqual(atMax.status, 201);
+  assert.strictEqual(atMax.body.transaction.amount, 999999999999.99);
+
+  const overNumber = await ctx.client.post(
+    '/api/transactions',
+    { category_id: expense.id, amount: 1000000000000 },
+    { token }
+  );
+  assert.strictEqual(overNumber.status, 400);
+  assert.strictEqual(overNumber.body.error, MESSAGES.MONEY_ERROR);
+
+  const overString = await ctx.client.post(
+    '/api/transactions',
+    { category_id: expense.id, amount: '1000000000000' },
+    { token }
+  );
+  assert.strictEqual(overString.status, 400);
+  assert.strictEqual(overString.body.error, MESSAGES.MONEY_ERROR);
 });
